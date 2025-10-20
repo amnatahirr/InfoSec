@@ -52,7 +52,7 @@ class _BackupConfigScreenState extends State<BackupConfigScreen> {
   }
 
 Future<String?> _uploadFileToServer(String filePath) async {
-  final uri = Uri.parse("http://localhost:5000/upload"); // your Node backend URL
+  final uri = Uri.parse("http://127.0.0.1:5000/upload"); // your Node backend URL
   final request = http.MultipartRequest("POST", uri);
   request.files.add(await http.MultipartFile.fromPath("file", filePath));
 
