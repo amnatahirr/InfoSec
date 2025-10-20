@@ -1,0 +1,69 @@
+# =========================
+# Flutter / Dart
+# =========================
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+ios/Flutter/.last_build_id
+# Exclude generated plugin registrant
+lib/generated_plugin_registrant.dart
+
+# macOS build
+macos/Flutter/ephemeral/
+build/macos/
+
+# Android build
+android/.gradle/
+android/app/build/
+android/local.properties
+
+# Web build
+web/.dart_tool/
+web/.dart_tool/*
+build/web/
+
+# Generated files
+*.log
+*.lock
+*.tmp
+
+# =========================
+# Node.js / Electron
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.pnpm-debug.log*
+dist/
+out/
+temp/
+cache/
+*.asar
+
+# Electron build output
+build/
+release/
+app-builds/
+**/Electron.app/
+**/dist/
+
+# =========================
+# IDEs / Editors
+# =========================
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+
+# =========================
+# OS generated files
+# =========================
+Thumbs.db
+Desktop.ini
