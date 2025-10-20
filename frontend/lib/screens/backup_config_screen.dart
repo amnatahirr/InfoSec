@@ -315,15 +315,31 @@ Future<String?> _uploadFileToServer(String filePath) async {
                       style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                     ),
                     const SizedBox(height: 12),
+                  
+                    ElevatedButton.icon(
+                      icon: Icon(Icons.folder_open),
+                      label: Text('Select Backup Folder'),
+                      onPressed: () async {
+                        String? selectedDir = await FilePicker.platform.getDirectoryPath();
+
+                        if (selectedDir != null) {
+                          setState(() {
+                            _backupFolderController.text = selectedDir;
+                          });
+                        }
+                      },
+                    ),
+                    SizedBox(height: 10),
                     TextField(
                       controller: _backupFolderController,
+                      readOnly: true,
                       decoration: InputDecoration(
-                        labelText: 'Backup Folder Path',
-                        hintText: 'e.g., D:\\Backups or /home/user/backups',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        prefixIcon: const Icon(Icons.folder),
+                        labelText: "Backup Folder Path",
+                        prefixIcon: Icon(Icons.folder),
+                        border: OutlineInputBorder(),
                       ),
                     ),
+
                     const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.all(12),

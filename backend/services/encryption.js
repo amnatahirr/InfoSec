@@ -1,38 +1,49 @@
 import crypto from "crypto"
 import fs from "fs/promises"
+import path from "path"
 
 const ALGORITHM = "aes-256-gcm"
-const SALT_LENGTH = 64
+const SALT_LENGTH = 16 // 128-bit salt (smaller & standard)
 const TAG_LENGTH = 16
 const IV_LENGTH = 12
 const PBKDF2_ITERATIONS = 100000
 
+/**
+ * Derive a 256-bit encryption key from a password and salt using PBKDF2.
+ */
 export function deriveKey(password, salt = null) {
-  if (!salt) {
-    salt = crypto.randomBytes(SALT_LENGTH)
-  }
+  if (!salt) salt = crypto.randomBytes(SALT_LENGTH)
 
-  // PBKDF2 with 100,000 iterations for 256-bit key
   const key = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 32, "sha256")
   return { key, salt }
 }
 
-export async function encryptFile(inputPath, outputPath, password) {
+/**
+ * Ensure that a directory exists before writing files to it.
+ */
+export async function ensureDir(dirPath) {
+  await fs.mkdir(dirPath, { recursive: true })
+}
+
+/**
+ * Encrypt a file using a pre-derived AES-256-GCM key.
+ * Output format: [IV(12)][AuthTag(16)][EncryptedData]
+ */
+export async function encryptFile(inputPath, outputPath, key) {
   try {
     const fileData = await fs.readFile(inputPath)
-    const { key, salt } = deriveKey(password)
-
     const iv = crypto.randomBytes(IV_LENGTH)
-    const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
 
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
     let encrypted = cipher.update(fileData)
     encrypted = Buffer.concat([encrypted, cipher.final()])
 
     const authTag = cipher.getAuthTag()
 
-    // Format: salt (64) + iv (12) + authTag (16) + encrypted data
-    const result = Buffer.concat([salt, iv, authTag, encrypted])
+    // Final binary layout
+    const result = Buffer.concat([iv, authTag, encrypted])
 
+    await ensureDir(path.dirname(outputPath))
     await fs.writeFile(outputPath, result)
 
     return {
@@ -40,29 +51,28 @@ export async function encryptFile(inputPath, outputPath, password) {
       size: result.length,
       originalSize: fileData.length,
       encryptedSize: encrypted.length,
+      path: outputPath,
     }
   } catch (error) {
-    throw new Error(`Encryption failed: ${error.message}`)
+    throw new Error(`Encryption failed for ${inputPath}: ${error.message}`)
   }
 }
 
-export async function decryptFile(inputPath, outputPath, password) {
+/**
+ * Decrypt a file using a pre-derived AES-256-GCM key.
+ */
+export async function decryptFile(inputPath, outputPath, key) {
   try {
     const encryptedData = await fs.readFile(inputPath)
 
-    // Validate minimum size
-    if (encryptedData.length < SALT_LENGTH + IV_LENGTH + TAG_LENGTH) {
+    // Validate structure
+    if (encryptedData.length < IV_LENGTH + TAG_LENGTH) {
       throw new Error("Invalid encrypted file format")
     }
 
-    // Extract components
-    const salt = encryptedData.slice(0, SALT_LENGTH)
-    const iv = encryptedData.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
-    const authTag = encryptedData.slice(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
-    const encrypted = encryptedData.slice(SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
-
-    // Derive key from password and salt
-    const { key } = deriveKey(password, salt)
+    const iv = encryptedData.slice(0, IV_LENGTH)
+    const authTag = encryptedData.slice(IV_LENGTH, IV_LENGTH + TAG_LENGTH)
+    const encrypted = encryptedData.slice(IV_LENGTH + TAG_LENGTH)
 
     const decipher = crypto.createDecipheriv(ALGORITHM, key, iv)
     decipher.setAuthTag(authTag)
@@ -70,27 +80,35 @@ export async function decryptFile(inputPath, outputPath, password) {
     let decrypted = decipher.update(encrypted)
     decrypted = Buffer.concat([decrypted, decipher.final()])
 
+    await ensureDir(path.dirname(outputPath))
     await fs.writeFile(outputPath, decrypted)
 
     return {
       success: true,
       size: decrypted.length,
       encryptedSize: encrypted.length,
+      path: outputPath,
     }
   } catch (error) {
-    throw new Error(`Decryption failed: ${error.message}`)
+    throw new Error(`Decryption failed for ${inputPath}: ${error.message}`)
   }
 }
 
+/**
+ * Generate a SHA-256 hash of a file’s contents — used for change detection.
+ */
 export async function generateFileHash(filePath) {
   try {
     const fileData = await fs.readFile(filePath)
     return crypto.createHash("sha256").update(fileData).digest("hex")
   } catch (error) {
-    throw new Error(`Hash generation failed: ${error.message}`)
+    throw new Error(`Hash generation failed for ${filePath}: ${error.message}`)
   }
 }
 
+/**
+ * Validate password strength (used during password creation/validation step).
+ */
 export function validatePasswordStrength(password) {
   const minLength = 8
   const hasUpperCase = /[A-Z]/.test(password)
@@ -105,7 +123,7 @@ export function validatePasswordStrength(password) {
   }
 
   if (password.length < minLength) {
-    strength.feedback.push(`Password must be at least ${minLength} characters`)
+    strength.feedback.push(`Password must be at least ${minLength} characters long`)
   } else {
     strength.score += 1
   }
