@@ -1,124 +1,186 @@
-import path from "path"
-import fs from "fs/promises"
-import { encryptFile, generateFileHash } from "./encryption.js"
-import {
-  getFilesFromPaths,
-  isFileModified,
-  updateFileMetadata,
-  copyFileToBackup,
-  cleanOldBackups,
-} from "./fileOperations.js"
-import { runQuery, getQuery } from "../database/db.js"
+import path from "path";
+import fs from "fs/promises";
+import crypto from "crypto";
 
+import {
+  deriveKey,
+  encryptFile,
+  decryptFile,
+  generateFileHash,
+  ensureDir,
+} from "./encryption.js";
+import { runQuery, getQuery, allQuery } from "../database/db.js";
+
+/**
+ * Load or create per-config salt file (.config_<id>.json)
+ */
+async function loadOrCreateSaltFile(backupFolder, configId) {
+  const saltFilePath = path.join(backupFolder, `.config_${configId}.json`);
+  try {
+    const txt = await fs.readFile(saltFilePath, "utf8");
+    const data = JSON.parse(txt);
+    return Buffer.from(data.salt, "base64");
+  } catch {
+    const salt = crypto.randomBytes(16);
+    const data = { salt: salt.toString("base64") };
+    await fs.writeFile(saltFilePath, JSON.stringify(data, null, 2));
+    return salt;
+  }
+}
+
+/**
+ * Recursively list all files from given source paths.
+ */
+async function getAllFiles(paths) {
+  const result = [];
+  for (const p of paths) {
+    try {
+      const stat = await fs.stat(p);
+      if (stat.isDirectory()) {
+        const entries = await fs.readdir(p, { withFileTypes: true });
+        for (const e of entries) {
+          const full = path.join(p, e.name);
+          if (e.isDirectory()) {
+            const sub = await getAllFiles([full]);
+            result.push(...sub);
+          } else result.push(full);
+        }
+      } else result.push(p);
+    } catch (e) {
+      console.warn(`[Backup] Skipped invalid path: ${p} (${e.message})`);
+    }
+  }
+  return result;
+}
+
+/**
+ * Simple change-detection based on file hash.
+ */
+async function isFileModified(configId, filePath, newHash) {
+  const row = await getQuery(
+    "SELECT file_hash FROM file_metadata WHERE config_id=? AND file_path=?",
+    [configId, filePath]
+  );
+  return !row || row.file_hash !== newHash;
+}
+
+/**
+ * Insert or update file metadata record.
+ */
+async function updateFileMetadata(configId, filePath, hash) {
+  const row = await getQuery(
+    "SELECT id FROM file_metadata WHERE config_id=? AND file_path=?",
+    [configId, filePath]
+  );
+  if (row) {
+    await runQuery(
+      "UPDATE file_metadata SET file_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      [hash, row.id]
+    );
+  } else {
+    await runQuery(
+      "INSERT INTO file_metadata (config_id, file_path, file_hash, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      [configId, filePath, hash]
+    );
+  }
+}
+
+/**
+ * Delete backups older than the configured retention period.
+ */
+async function cleanOldBackups(backupFolder, retentionDays) {
+  try {
+    const entries = await fs.readdir(backupFolder, { withFileTypes: true });
+    let deleted = 0;
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith(".config_")) continue;
+      const full = path.join(backupFolder, e.name);
+      const stat = await fs.stat(full);
+      const ageDays = (Date.now() - stat.mtimeMs) / (1000 * 60 * 60 * 24);
+      if (ageDays > retentionDays) {
+        await fs.rm(full, { recursive: true, force: true });
+        deleted++;
+      }
+    }
+    return deleted;
+  } catch (e) {
+    console.warn(`[Backup] Retention cleanup warning: ${e.message}`);
+    return 0;
+  }
+}
+
+/**
+ * Perform encrypted backup
+ */
 export async function performBackup(configId, password) {
   try {
-    const config = await getQuery("SELECT * FROM backup_configs WHERE id = ?", [configId])
+    const config = await getQuery("SELECT * FROM backup_configs WHERE id = ?", [
+      configId,
+    ]);
+    if (!config) throw new Error("Backup configuration not found");
 
-    if (!config) throw new Error("Backup configuration not found")
+    const sourcePaths = JSON.parse(config.source_paths);
+    const backupFolder = config.backup_folder;
+    const retentionDays = Number(config.retention_days || 4);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupSessionPath = path.join(backupFolder, `backup_${timestamp}`);
 
-    const sourcePaths = JSON.parse(config.source_paths)
-    const backupFolder = config.backup_folder
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
-    const backupSessionPath = path.join(backupFolder, `backup_${timestamp}`)
+    await ensureDir(backupFolder);
+    await ensureDir(backupSessionPath);
 
-    console.log(`[Backup] Starting backup for config ${configId}`)
-    console.log(`[Backup] Backup folder: ${backupFolder}`)
-    console.log(`[Backup] Backup session path: ${backupSessionPath}`)
-    console.log(`[Backup] Source paths: ${sourcePaths.join(", ")}`)
+    console.log(`[Backup] Starting backup for config ${configId}`);
+    console.log(`[Backup] Sources: ${sourcePaths.join(", ")}`);
+    console.log(`[Backup] Backup session: ${backupSessionPath}`);
 
-    try {
-      await fs.mkdir(backupFolder, { recursive: true })
-      console.log(`[Backup] Backup folder created/verified: ${backupFolder}`)
-    } catch (error) {
-      throw new Error(`Cannot create backup folder at ${backupFolder}: ${error.message}`)
-    }
+    // 1️⃣ Load / create salt, derive encryption key
+    const salt = await loadOrCreateSaltFile(backupFolder, configId);
+    const { key } = deriveKey(password, salt);
 
-    // Get all files
-    const allFiles = await getFilesFromPaths(sourcePaths)
-    console.log(`[Backup] Found ${allFiles.length} total files`)
-    console.log(allFiles.slice(0, 5));
+    // 2️⃣ Collect files
+    const allFiles = await getAllFiles(sourcePaths);
+    console.log(`[Backup] Found ${allFiles.length} total files`);
 
+    let successCount = 0;
+    let totalSize = 0;
+    const failedFiles = [];
 
-    if (allFiles.length === 0) {
-      console.log(`[Backup] No files found in source paths`)
-      return {
-        success: true,
-        filesBackedUp: 0,
-        totalSize: 0,
-        backupPath: backupSessionPath,
-        failedFiles: [],
-        status: "success",
-        message: "No files to backup",
-      }
-    }
-
-    // Filter only modified files (incremental backup)
-    const filesToBackup = []
     for (const file of allFiles) {
-      const isModified = await isFileModified(configId, file)
-      if (isModified) {
-        filesToBackup.push(file)
-      }
-    }
-
-    console.log(`[Backup] ${filesToBackup.length} files need backup`)
-
-    let successCount = 0
-    let totalSize = 0
-    const failedFiles = []
-
-    // Encrypt and backup files
-    for (const file of filesToBackup) {
       try {
-        const cleanRelative = path.relative(process.cwd(), file)
-        .replace(/[:]/g, '')       // remove invalid drive letters like C:
-        .replace(/\\/g, '/');     
-        const backupFilePath = path.join(backupSessionPath, cleanRelative);
-        await fs.mkdir(path.dirname(backupFilePath), { recursive: true })
+        const fileHash = await generateFileHash(file);
+        const modified = await isFileModified(configId, file, fileHash);
+        if (!modified) continue;
 
+        // ✅ FIXED PATH LOGIC
+        const relativePath = path.relative(sourcePaths[0], file);
+        const destPath = path.join(backupSessionPath, relativePath + ".enc");
 
-        console.log(`[Backup] Processing file: ${file}`)
-        console.log(`[Backup] Backup path: ${backupFilePath}`)
+        // Ensure directories exist before writing
+        await fs.mkdir(path.dirname(destPath), { recursive: true });
 
-        // Copy file to backup location
-        await copyFileToBackup(file, backupFilePath)
-        console.log(`[Backup] File copied to: ${backupFilePath}`)
+        await encryptFile(file, destPath, key);
+        await updateFileMetadata(configId, file, fileHash);
 
-        // Encrypt the backup file
-        const encryptedPath = backupFilePath + ".enc"
-        const encryptResult = await encryptFile(backupFilePath, encryptedPath, password)
-        console.log(`[Backup] Encrypted size: ${encryptResult.encryptedSize} bytes`);
+        const stat = await fs.stat(file);
+        totalSize += stat.size;
+        successCount++;
 
-        console.log(`[Backup] File encrypted to: ${encryptedPath}`)
-
-        // Delete unencrypted backup
-        await fs.unlink(backupFilePath)
-        console.log(`[Backup] Unencrypted file deleted`)
-
-        // Update metadata
-        const fileHash = await generateFileHash(file)
-        await updateFileMetadata(configId, file, fileHash)
-
-        successCount++
-        totalSize += encryptResult.originalSize
-
-        console.log(`[Backup] Successfully encrypted: ${file}`)
-      } catch (error) {
-        console.error(`[Backup] Error backing up file ${file}:`, error.message)
-        failedFiles.push({ file, error: error.message })
+        console.log(`[Backup] Encrypted: ${file}`);
+      } catch (err) {
+        console.error(`[Backup] Failed ${file}: ${err.message}`);
+        failedFiles.push({ file, error: err.message });
       }
     }
 
-    // Record backup history
-    const backupStatus = failedFiles.length === 0 ? "success" : "partial"
+    // 4️⃣ Log history
+    const status = failedFiles.length === 0 ? "success" : "partial";
     await runQuery(
       "INSERT INTO backup_history (config_id, backup_path, file_count, total_size, status) VALUES (?, ?, ?, ?, ?)",
-      [configId, backupSessionPath, successCount, totalSize, backupStatus],
-    )
+      [configId, backupSessionPath, successCount, totalSize, status]
+    );
 
-    // Clean old backups
-    const deletedCount = await cleanOldBackups(configId, config.retention_days)
-    console.log(`[Backup] Cleaned ${deletedCount} old backups`)
+    // 5️⃣ Retention cleanup
+    const deletedCount = await cleanOldBackups(backupFolder, retentionDays);
+    console.log(`[Backup] Deleted ${deletedCount} old backups`);
 
     return {
       success: failedFiles.length === 0,
@@ -126,59 +188,83 @@ export async function performBackup(configId, password) {
       totalSize,
       backupPath: backupSessionPath,
       failedFiles,
-      status: backupStatus,
-      message: `Backup completed. ${successCount} files encrypted.`,
-    }
+      status,
+      message:
+        successCount === 0
+          ? "No modified files found. Nothing new to backup."
+          : `Backup completed: ${successCount} file(s) encrypted.`,
+    };
   } catch (error) {
-    console.error(`[Backup] Backup failed:`, error.message)
-    throw new Error(`Backup failed: ${error.message}`)
+    console.error(`[Backup] Backup failed: ${error.message}`);
+    throw new Error(`Backup failed: ${error.message}`);
   }
 }
 
+/**
+ * Restore files from an encrypted backup folder
+ */
 export async function restoreBackup(backupId, password, restorePath) {
   try {
-    const backup = await getQuery("SELECT * FROM backup_history WHERE id = ?", [backupId])
+    const backup = await getQuery("SELECT * FROM backup_history WHERE id = ?", [
+      backupId,
+    ]);
+    if (!backup) throw new Error("Backup not found");
 
-    if (!backup) throw new Error("Backup not found")
+    const config = await getQuery("SELECT * FROM backup_configs WHERE id = ?", [
+      backup.config_id,
+    ]);
+    if (!config) throw new Error("Config not found for this backup");
 
-    const fs = await import("fs/promises")
-    const { decryptFile } = await import("./encryption.js")
+    const backupFolder = config.backup_folder;
+    const saltFile = path.join(backupFolder, `.config_${config.id}.json`);
+    const { salt } = JSON.parse(await fs.readFile(saltFile, "utf8"));
+    const { key } = deriveKey(password, Buffer.from(salt, "base64"));
 
-    console.log(`[Restore] Starting restore from backup ${backupId}`)
+    const entries = await fs.readdir(backup.backup_path, {
+      withFileTypes: true,
+    });
+    let restoredCount = 0;
+    const failedFiles = [];
 
-    const encryptedFiles = await fs.readdir(backup.backup_path, { recursive: true })
-    let restoredCount = 0
-    const failedFiles = []
+    async function walk(dir) {
+      const items = await fs.readdir(dir, { withFileTypes: true });
+      for (const e of items) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) await walk(full);
+        else if (e.name.endsWith(".enc")) {
+          try {
+            const relativePath =
+              path.relative(sourcePaths[0], file) || path.basename(file);
+            const destPath = path.join(
+              backupSessionPath,
+              relativePath + ".enc"
+            );
 
-    for (const file of encryptedFiles) {
-      if (file.endsWith(".enc")) {
-        try {
-          const encryptedPath = path.join(backup.backup_path, file)
-          const decryptedPath = path.join(restorePath, file.replace(".enc", ""))
-
-          // Create directory if needed
-          const dir = path.dirname(decryptedPath)
-          await fs.mkdir(dir, { recursive: true })
-
-          await decryptFile(encryptedPath, decryptedPath, password)
-          restoredCount++
-
-          console.log(`[Restore] Restored: ${file}`)
-        } catch (error) {
-          console.error(`[Restore] Error restoring file ${file}:`, error.message)
-          failedFiles.push({ file, error: error.message })
+            await ensureDir(path.dirname(dest));
+            await decryptFile(full, dest, key);
+            restoredCount++;
+          } catch (err) {
+            console.error(`[Restore] Failed ${e.name}: ${err.message}`);
+            failedFiles.push({ file: e.name, error: err.message });
+          }
         }
       }
     }
+
+    await walk(backup.backup_path);
 
     return {
       success: failedFiles.length === 0,
       filesRestored: restoredCount,
       restorePath,
       failedFiles,
-    }
+      message:
+        failedFiles.length === 0
+          ? "All files restored successfully."
+          : `Restored ${restoredCount} files with some errors.`,
+    };
   } catch (error) {
-    console.error(`[Restore] Restore failed:`, error.message)
-    throw new Error(`Restore failed: ${error.message}`)
+    console.error(`[Restore] Restore failed: ${error.message}`);
+    throw new Error(`Restore failed: ${error.message}`);
   }
 }
