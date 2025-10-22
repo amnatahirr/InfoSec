@@ -27,9 +27,9 @@ export async function ensureDir(dirPath) {
 
 /**
  * Encrypt a file using a pre-derived AES-256-GCM key.
- * Output format: [IV(12)][AuthTag(16)][EncryptedData]
+ * Output format: [Salt(16)][IV(12)][AuthTag(16)][EncryptedData]
  */
-export async function encryptFile(inputPath, outputPath, key) {
+export async function encryptFile(inputPath, outputPath, key, salt) {
   try {
     const fileData = await fs.readFile(inputPath)
     const iv = crypto.randomBytes(IV_LENGTH)
@@ -40,8 +40,7 @@ export async function encryptFile(inputPath, outputPath, key) {
 
     const authTag = cipher.getAuthTag()
 
-    // Final binary layout
-    const result = Buffer.concat([iv, authTag, encrypted])
+    const result = Buffer.concat([salt, iv, authTag, encrypted])
 
     await ensureDir(path.dirname(outputPath))
     await fs.writeFile(outputPath, result)
@@ -59,20 +58,22 @@ export async function encryptFile(inputPath, outputPath, key) {
 }
 
 /**
- * Decrypt a file using a pre-derived AES-256-GCM key.
+ * Decrypt a file using a password (derives key from stored salt).
  */
-export async function decryptFile(inputPath, outputPath, key) {
+export async function decryptFile(inputPath, outputPath, password) {
   try {
     const encryptedData = await fs.readFile(inputPath)
 
-    // Validate structure
-    if (encryptedData.length < IV_LENGTH + TAG_LENGTH) {
+    if (encryptedData.length < SALT_LENGTH + IV_LENGTH + TAG_LENGTH) {
       throw new Error("Invalid encrypted file format")
     }
 
-    const iv = encryptedData.slice(0, IV_LENGTH)
-    const authTag = encryptedData.slice(IV_LENGTH, IV_LENGTH + TAG_LENGTH)
-    const encrypted = encryptedData.slice(IV_LENGTH + TAG_LENGTH)
+    const salt = encryptedData.slice(0, SALT_LENGTH)
+    const iv = encryptedData.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
+    const authTag = encryptedData.slice(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
+    const encrypted = encryptedData.slice(SALT_LENGTH + IV_LENGTH + TAG_LENGTH)
+
+    const { key } = deriveKey(password, salt)
 
     const decipher = crypto.createDecipheriv(ALGORITHM, key, iv)
     decipher.setAuthTag(authTag)
@@ -95,7 +96,7 @@ export async function decryptFile(inputPath, outputPath, key) {
 }
 
 /**
- * Generate a SHA-256 hash of a file’s contents — used for change detection.
+ * Generate a SHA-256 hash of a file's contents — used for change detection.
  */
 export async function generateFileHash(filePath) {
   try {

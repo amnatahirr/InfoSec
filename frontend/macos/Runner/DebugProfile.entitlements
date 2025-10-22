@@ -2,24 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Enable sandbox -->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-
-	<!-- Allow read/write access to user-selected files or folders -->
-	<key>com.apple.security.files.user-selected.read-write</key>
-	<true/>
-
-	<!-- Allow your app to make outgoing network connections (to Node backend) -->
-	<key>com.apple.security.network.client</key>
-	<true/>
-
-	<!-- Optional: Allow your app to run JIT (Flutter requirement) -->
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
-
-	<!-- Optional: Allow it to act as a local server (not always needed) -->
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.amna.frontendapp</string>
+	</array>
 </dict>
 </plist>

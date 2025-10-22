@@ -1,7 +1,7 @@
 #!/bin/sh
 # This is a generated file; do not edit or check into version control.
 export "FLUTTER_ROOT=/Users/mac/development/flutter"
-export "FLUTTER_APPLICATION_PATH=/Users/mac/Desktop/security backup softwaree/frontend"
+export "FLUTTER_APPLICATION_PATH=/Users/mac/Documents/GitHub/InfoSec/frontend"
 export "COCOAPODS_PARALLEL_CODE_SIGN=true"
 export "FLUTTER_TARGET=lib/main.dart"
 export "FLUTTER_BUILD_DIR=build"
@@ -11,4 +11,4 @@ export "DART_DEFINES=RkxVVFRFUl9WRVJTSU9OPTMuMzUuNg==,RkxVVFRFUl9DSEFOTkVMPXN0YW
 export "DART_OBFUSCATION=false"
 export "TRACK_WIDGET_CREATION=true"
 export "TREE_SHAKE_ICONS=true"
-export "PACKAGE_CONFIG=/Users/mac/Desktop/security backup softwaree/frontend/.dart_tool/package_config.json"
+export "PACKAGE_CONFIG=/Users/mac/Documents/GitHub/InfoSec/frontend/.dart_tool/package_config.json"

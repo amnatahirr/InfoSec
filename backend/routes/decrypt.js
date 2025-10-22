@@ -21,7 +21,6 @@ router.post("/file", verifyToken, async (req, res) => {
       return res.status(404).json({ error: "Encrypted file not found" })
     }
 
-    // Decrypt the file
     const result = await decryptFile(encryptedFilePath, outputPath || encryptedFilePath + ".decrypted", password)
 
     res.json({
@@ -50,7 +49,6 @@ router.post("/preview", verifyToken, async (req, res) => {
       return res.status(404).json({ error: "Encrypted file not found" })
     }
 
-    // Create temporary decrypted file
     const tempPath = encryptedFilePath + ".temp"
     const result = await decryptFile(encryptedFilePath, tempPath, password)
 
